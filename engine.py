@@ -5,8 +5,7 @@ import time
 from typing import List, Dict, Any
 from groq import Groq
 
-from prompts import OPENING_STATEMENT_PROMPT
-from personas import EXPERT_PERSONAS
+from prompts import OPENING_STATEMENT_PROMPT, PERSONA_GENERATION_PROMPT
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -43,6 +42,7 @@ class SynthosEngine:
         self.debate_history = []
         self.final_consensus = {}
 
+    # ---------- LLM helpers ----------
     def _call_llm_with_retry(self, prompt: str) -> str:
         last_exception = None
         delay = self.retry_delay
@@ -85,18 +85,129 @@ class SynthosEngine:
             logger.error(f"LLM call error: {e}")
             raise RuntimeError(f"LLM call failed: {e}")
 
+    def _extract_json(self, text: str) -> str:
+        """Extract the first valid JSON object or array from text."""
+        # Remove markdown code fences
+        text = re.sub(r'```json\s*|\s*```', '', text, flags=re.IGNORECASE)
+        
+        # Try to find the first { or [ and extract the matching closing
+        start_obj = text.find('{')
+        start_arr = text.find('[')
+        
+        # Determine which comes first and extract accordingly
+        if start_arr != -1 and (start_obj == -1 or start_arr < start_obj):
+            # Likely an array
+            start = start_arr
+            # Find matching closing bracket
+            bracket_count = 0
+            for i, ch in enumerate(text[start:], start=start):
+                if ch == '[':
+                    bracket_count += 1
+                elif ch == ']':
+                    bracket_count -= 1
+                    if bracket_count == 0:
+                        end = i
+                        break
+            else:
+                # No matching bracket, fallback to simple find
+                end = text.rfind(']')
+            if start != -1 and end != -1 and end > start:
+                candidate = text[start:end+1]
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except:
+                    pass
+        else:
+            # Try object extraction
+            start = text.find('{')
+            end = text.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                candidate = text[start:end+1]
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except:
+                    pass
+        
+        # Fallback: find any JSON-like structures with regex
+        matches = re.findall(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+        for match in matches:
+            try:
+                json.loads(match)
+                return match
+            except:
+                continue
+        
+        # If all fails, return original
+        return text
+
+    # ---------- Topic ----------
     def set_topic(self, topic: str, constraints: str = ""):
         if not topic or not topic.strip():
             raise ValueError("Topic cannot be empty.")
         self.topic = topic.strip()
         self.user_constraints = constraints.strip() if constraints else ""
 
-    # Phase 1: hardcoded personas
+    # ---------- Phase 2: Dynamic Personas ----------
     def generate_personas(self):
-        self.personas = EXPERT_PERSONAS.copy()
-        logger.info(f"Generated {len(self.personas)} personas (hardcoded)")
-        return self.personas
+        """Generate expert personas dynamically based on the topic."""
+        try:
+            prompt = PERSONA_GENERATION_PROMPT.format(
+                topic=self.topic,
+                constraints=self.user_constraints if self.user_constraints else "None"
+            )
+            response = self._call_llm(prompt)
+            logger.info(f"Persona generation raw response: {response}")
+            
+            json_str = self._extract_json(response)
+            logger.info(f"Extracted JSON: {json_str}")
+            
+            personas = json.loads(json_str)
+            
+            # Validate structure: must be a list, each item must have required keys
+            if isinstance(personas, list) and len(personas) >= 2:
+                valid = True
+                for p in personas:
+                    if not all(k in p for k in ("name", "role", "personality", "goal")):
+                        valid = False
+                        break
+                if valid:
+                    self.personas = personas
+                    logger.info(f"Generated {len(self.personas)} dynamic personas")
+                    return self.personas
+                else:
+                    raise ValueError("Persona missing required fields")
+            else:
+                raise ValueError("Invalid persona format: not a list or too few items")
+                
+        except Exception as e:
+            logger.error(f"Dynamic persona generation failed: {e}. Falling back to hardcoded personas.")
+            # Fallback to a generic set of three personas
+            self.personas = [
+                {
+                    "name": "Dr. Tech Expert",
+                    "role": "Chief Technology Officer",
+                    "personality": "Technical, pragmatic, loves innovation.",
+                    "goal": "Ensure technical feasibility and scalability."
+                },
+                {
+                    "name": "Dr. Ethics Advisor",
+                    "role": "Ethics & Compliance Lead",
+                    "personality": "Cautious, risk-aware, concerned with regulations.",
+                    "goal": "Ensure compliance and ethical considerations."
+                },
+                {
+                    "name": "Ms. Business Strategist",
+                    "role": "Head of Product Strategy",
+                    "personality": "Market-driven, ROI-focused, user-centric.",
+                    "goal": "Align with business goals and user needs."
+                }
+            ]
+            logger.info("Using fallback personas")
+            return self.personas
 
+    # ---------- Debate Rounds ----------
     def round1_opening_statements(self):
         statements = []
         for p in self.personas:
@@ -171,31 +282,7 @@ Keep it to 150 words."""
                 self.debate_history.append({"round": 3, "speaker": p["name"], "text": error_text})
         return refinements
 
-    def _extract_json(self, text: str) -> str:
-        """Extract the first valid JSON object from text."""
-        # Remove markdown code fences
-        text = re.sub(r'```json\s*|\s*```', '', text, flags=re.IGNORECASE)
-        # Find the first { and last }
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            candidate = text[start:end+1]
-            try:
-                json.loads(candidate)
-                return candidate
-            except:
-                pass
-        # Fallback: find JSON-like objects
-        matches = re.findall(r'\{[^{}]*\}', text, re.DOTALL)
-        for match in matches:
-            try:
-                json.loads(match)
-                return match
-            except:
-                continue
-        # If all fails, return original (will cause JSONDecodeError)
-        return text
-
+    # ---------- Mediator ----------
     def mediate(self):
         transcript = "\n".join([f"Round {h['round']} - {h['speaker']}: {h['text']}" for h in self.debate_history])
         prompt = f"""You are a neutral mediator. Your task is to synthesize the debate below into a consensus solution.
@@ -231,6 +318,7 @@ Do not include any other text, explanation, or markdown. Output only the JSON ob
             self.final_consensus = {"error": f"Mediator failed: {e}"}
         return self.final_consensus
 
+    # ---------- Output ----------
     def format_output(self, format_type="markdown"):
         if format_type == "json":
             return {
@@ -268,6 +356,7 @@ Do not include any other text, explanation, or markdown. Output only the JSON ob
         else:
             return self.final_consensus
 
+    # ---------- Run ----------
     def run(self, topic: str, constraints: str = ""):
         try:
             self.set_topic(topic, constraints)
