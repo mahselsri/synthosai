@@ -38,3 +38,33 @@ Return only the JSON array. Example:
   ...
 ]
 """
+
+RUBRIC_MEDIATOR_PROMPT = """You are a neutral mediator with a structured rubric. Your task is to evaluate the debate and produce a consensus solution using the following rubric:
+
+Rubric (each criterion 1-5, 5 = best):
+- Feasibility: Can this be implemented realistically?
+- Cost: Is the cost reasonable given constraints?
+- Risk: Are risks identified and mitigated?
+- Alignment: Does it align with user constraints and expert goals?
+
+For each expert's final stance (from Round 3), assign scores. Then propose a weighted verdict.
+
+Topic: {topic}
+User constraints: {constraints}
+
+Debate transcript (all rounds):
+{transcript}
+
+Output a valid JSON object with the following structure:
+{{
+    "scorecard": [
+        {{"expert": "name", "scores": {{"feasibility": int, "cost": int, "risk": int, "alignment": int}}, "average": float}}
+    ],
+    "weighted_verdict": "clear statement based on highest average scores",
+    "verdict": "same as weighted_verdict (for backward compatibility)",
+    "implementation_plan": ["step 1", "step 2", ...],
+    "risks_mitigations": ["risk -> mitigation", ...],
+    "dissent_note": "minority opinion if any, else 'None'"
+}}
+Do not include extra text or markdown. Only output JSON.
+"""

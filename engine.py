@@ -5,7 +5,12 @@ import time
 from typing import List, Dict, Any
 from groq import Groq
 
-from prompts import OPENING_STATEMENT_PROMPT, PERSONA_GENERATION_PROMPT, MODERATOR_CROSS_EXAM_PROMPT
+from prompts import (
+    OPENING_STATEMENT_PROMPT,
+    PERSONA_GENERATION_PROMPT,
+    MODERATOR_CROSS_EXAM_PROMPT,
+    RUBRIC_MEDIATOR_PROMPT
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -87,18 +92,12 @@ class SynthosEngine:
 
     def _extract_json(self, text: str) -> str:
         """Extract the first valid JSON object or array from text."""
-        # Remove markdown code fences
         text = re.sub(r'```json\s*|\s*```', '', text, flags=re.IGNORECASE)
-        
-        # Try to find the first { or [ and extract the matching closing
         start_obj = text.find('{')
         start_arr = text.find('[')
         
-        # Determine which comes first and extract accordingly
         if start_arr != -1 and (start_obj == -1 or start_arr < start_obj):
-            # Likely an array
             start = start_arr
-            # Find matching closing bracket
             bracket_count = 0
             for i, ch in enumerate(text[start:], start=start):
                 if ch == '[':
@@ -109,7 +108,6 @@ class SynthosEngine:
                         end = i
                         break
             else:
-                # No matching bracket, fallback to simple find
                 end = text.rfind(']')
             if start != -1 and end != -1 and end > start:
                 candidate = text[start:end+1]
@@ -119,7 +117,6 @@ class SynthosEngine:
                 except:
                     pass
         else:
-            # Try object extraction
             start = text.find('{')
             end = text.rfind('}')
             if start != -1 and end != -1 and end > start:
@@ -130,7 +127,6 @@ class SynthosEngine:
                 except:
                     pass
         
-        # Fallback: find any JSON-like structures with regex
         matches = re.findall(r'(\{.*\}|\[.*\])', text, re.DOTALL)
         for match in matches:
             try:
@@ -138,8 +134,6 @@ class SynthosEngine:
                 return match
             except:
                 continue
-        
-        # If all fails, return original
         return text
 
     # ---------- Topic ----------
@@ -151,7 +145,6 @@ class SynthosEngine:
 
     # ---------- Phase 2: Dynamic Personas ----------
     def generate_personas(self):
-        """Generate expert personas dynamically based on the topic."""
         try:
             prompt = PERSONA_GENERATION_PROMPT.format(
                 topic=self.topic,
@@ -159,13 +152,9 @@ class SynthosEngine:
             )
             response = self._call_llm(prompt)
             logger.info(f"Persona generation raw response: {response}")
-            
             json_str = self._extract_json(response)
             logger.info(f"Extracted JSON: {json_str}")
-            
             personas = json.loads(json_str)
-            
-            # Validate structure: must be a list, each item must have required keys
             if isinstance(personas, list) and len(personas) >= 2:
                 valid = True
                 for p in personas:
@@ -179,11 +168,9 @@ class SynthosEngine:
                 else:
                     raise ValueError("Persona missing required fields")
             else:
-                raise ValueError("Invalid persona format: not a list or too few items")
-                
+                raise ValueError("Invalid persona format")
         except Exception as e:
             logger.error(f"Dynamic persona generation failed: {e}. Falling back to hardcoded personas.")
-            # Fallback to a generic set of three personas
             self.personas = [
                 {
                     "name": "Dr. Tech Expert",
@@ -231,14 +218,12 @@ class SynthosEngine:
 
     def round2_cross_examination(self):
         """Moderator‑driven cross‑examination."""
-        # Collect opening statements
         openings = []
         for h in self.debate_history:
             if h["round"] == 1:
                 openings.append(f"{h['speaker']}: {h['text']}")
         statements_text = "\n".join(openings)
 
-        # Step 1: Moderator creates cross‑exam assignments
         try:
             prompt = MODERATOR_CROSS_EXAM_PROMPT.format(
                 topic=self.topic,
@@ -255,7 +240,6 @@ class SynthosEngine:
         except Exception as e:
             logger.error(f"Moderator assignment failed: {e}. Falling back to simple cross‑exam.")
             assignments = []
-            # Fallback: let each expert respond to the first expert (like Phase 2)
             if self.debate_history:
                 first_speaker = None
                 for h in self.debate_history:
@@ -270,37 +254,28 @@ class SynthosEngine:
                             "point": "overall opening statement"
                         })
                     logger.info(f"Fallback assignments created: {len(assignments)}")
-                else:
-                    logger.error("No opening statements found; cannot create fallback assignments.")
 
-        # Step 2: Execute each cross‑exam
         cross_exam = []
         for assign in assignments:
             responder_name = assign["responder"]
             target_name = assign["target"]
             point = assign.get("point", "their opening statement")
-
-            # Find responder persona and target statement
             responder_persona = next((p for p in self.personas if p["name"] == responder_name), None)
             if not responder_persona:
-                logger.warning(f"Responder '{responder_name}' not found in personas. Skipping.")
+                logger.warning(f"Responder '{responder_name}' not found. Skipping.")
                 continue
-
             target_statement = ""
             for h in self.debate_history:
                 if h["round"] == 1 and h["speaker"] == target_name:
                     target_statement = h["text"]
                     break
             if not target_statement:
-                logger.warning(f"Target '{target_name}' opening statement not found. Using placeholder.")
                 target_statement = f"the opening statement of {target_name}"
-
             try:
                 prompt = f"""You are {responder_persona['role']}. {responder_persona['personality']}
 Topic: {self.topic}
 {target_name} said: "{target_statement}"
 Specifically address this point: {point}
-
 Write a brief response (max 100 words). Do you agree or disagree? Provide a counterpoint or supporting point."""
                 text = self._call_llm(prompt)
                 cross_exam.append({"expert": responder_name, "text": text})
@@ -308,10 +283,9 @@ Write a brief response (max 100 words). Do you agree or disagree? Provide a coun
                 logger.info(f"Cross‑exam: {responder_name} responded to {target_name} about '{point}'")
             except Exception as e:
                 logger.error(f"Cross‑exam failed for {responder_name}: {e}")
-                error_text = f"[Error generating cross-examination: {e}]"
+                error_text = f"[Error: {e}]"
                 cross_exam.append({"expert": responder_name, "text": error_text})
                 self.debate_history.append({"round": 2, "speaker": responder_name, "text": error_text})
-
         return cross_exam
 
     def round3_refinement(self):
@@ -323,7 +297,6 @@ Write a brief response (max 100 words). Do you agree or disagree? Provide a coun
 Topic: {self.topic}
 Debate so far:
 {history_summary}
-
 Now, give your refined position. What points do you concede? What do you still stand by? Propose a compromise if possible.
 Keep it to 150 words."""
                 text = self._call_llm(prompt)
@@ -332,45 +305,52 @@ Keep it to 150 words."""
                 logger.info(f"Round 3: {p['name']} completed.")
             except Exception as e:
                 logger.error(f"Round 3 failed for {p['name']}: {e}")
-                error_text = f"[Error generating refinement: {e}]"
+                error_text = f"[Error: {e}]"
                 refinements.append({"expert": p["name"], "text": error_text})
                 self.debate_history.append({"round": 3, "speaker": p["name"], "text": error_text})
         return refinements
 
-    # ---------- Mediator ----------
+    # ---------- Phase 4: Rubric Mediator ----------
     def mediate(self):
         transcript = "\n".join([f"Round {h['round']} - {h['speaker']}: {h['text']}" for h in self.debate_history])
-        prompt = f"""You are a neutral mediator. Your task is to synthesize the debate below into a consensus solution.
-
-Topic: {self.topic}
-User constraints: {self.user_constraints if self.user_constraints else "None"}
-
-Debate transcript:
-{transcript}
-
-Output a valid JSON object with exactly the following structure:
-{{
-    "verdict": "clear statement of the agreed solution",
-    "implementation_plan": ["step 1", "step 2", "step 3"],
-    "risks_mitigations": ["risk 1 -> mitigation", "risk 2 -> mitigation"],
-    "dissent_note": "if any expert disagreed, note their view; otherwise 'None'"
-}}
-Do not include any other text, explanation, or markdown. Output only the JSON object."""
-
+        prompt = RUBRIC_MEDIATOR_PROMPT.format(
+            topic=self.topic,
+            constraints=self.user_constraints if self.user_constraints else "None",
+            transcript=transcript
+        )
         try:
             response = self._call_llm(prompt)
             json_str = self._extract_json(response)
             self.final_consensus = json.loads(json_str)
-            logger.info("Mediator output parsed successfully.")
+            logger.info("Rubric mediator output parsed successfully.")
+            # Ensure backward compatibility
+            if "verdict" not in self.final_consensus:
+                self.final_consensus["verdict"] = self.final_consensus.get("weighted_verdict", "No verdict")
+            if "implementation_plan" not in self.final_consensus:
+                self.final_consensus["implementation_plan"] = []
+            if "risks_mitigations" not in self.final_consensus:
+                self.final_consensus["risks_mitigations"] = []
+            if "dissent_note" not in self.final_consensus:
+                self.final_consensus["dissent_note"] = "None"
         except json.JSONDecodeError as e:
-            logger.error(f"Mediator JSON parsing failed: {e}. Raw response: {response}")
+            logger.error(f"Rubric mediator JSON parsing failed: {e}. Raw response: {response}")
             self.final_consensus = {
-                "error": "Failed to parse mediator output as JSON",
-                "raw_response": response
+                "error": "Failed to parse rubric mediator output as JSON",
+                "raw_response": response,
+                "verdict": "Error in mediator",
+                "implementation_plan": [],
+                "risks_mitigations": [],
+                "dissent_note": "None"
             }
         except Exception as e:
-            logger.error(f"Mediator call failed: {e}")
-            self.final_consensus = {"error": f"Mediator failed: {e}"}
+            logger.error(f"Rubric mediator call failed: {e}")
+            self.final_consensus = {
+                "error": f"Mediator failed: {e}",
+                "verdict": "Error",
+                "implementation_plan": [],
+                "risks_mitigations": [],
+                "dissent_note": "None"
+            }
         return self.final_consensus
 
     # ---------- Output ----------
@@ -399,6 +379,11 @@ Do not include any other text, explanation, or markdown. Output only the JSON ob
                 if "raw_response" in self.final_consensus:
                     md += f"**Raw mediator output:**\n```\n{self.final_consensus['raw_response']}\n```\n"
             else:
+                if "scorecard" in self.final_consensus:
+                    md += "### Scorecard\n"
+                    for s in self.final_consensus["scorecard"]:
+                        md += f"- {s['expert']}: {s['scores']} (avg {s['average']})\n"
+                    md += "\n"
                 md += f"**Verdict:** {self.final_consensus.get('verdict', '')}\n\n"
                 md += "**Implementation Plan:**\n"
                 for step in self.final_consensus.get('implementation_plan', []):
@@ -418,7 +403,6 @@ Do not include any other text, explanation, or markdown. Output only the JSON ob
         except ValueError as e:
             logger.error(f"Invalid topic: {e}")
             return f"Error: {e}"
-
         self.generate_personas()
         self.round1_opening_statements()
         self.round2_cross_examination()
