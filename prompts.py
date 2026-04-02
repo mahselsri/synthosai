@@ -1,5 +1,3 @@
-# prompts.py
-
 OPENING_STATEMENT_PROMPT = """You are {role}. {personality}
 Your goal: {goal}
 Topic: {topic}
@@ -20,5 +18,23 @@ Return only the JSON array, no other text. Example:
     "personality": "Data-driven, skeptical of unproven claims, optimistic about AI's potential",
     "goal": "Ensure decisions are backed by empirical evidence and scalable architecture"
   }}
+]
+"""
+
+MODERATOR_CROSS_EXAM_PROMPT = """You are a debate moderator. Your task is to create a cross‑examination session based on the opening statements below.
+
+Topic: {topic}
+Experts and their opening statements:
+{statements}
+
+Identify 2–3 points of conflict or tension. For each, assign which expert should respond to which other expert. Output a JSON array of objects with:
+- "responder": the name of the expert who should respond
+- "target": the name of the expert whose argument they should address
+- "point": the specific point to address
+
+Return only the JSON array. Example:
+[
+  {{"responder": "Sarah Chen", "target": "Marcus Webb", "point": "security concerns about rapid deployment"}},
+  ...
 ]
 """

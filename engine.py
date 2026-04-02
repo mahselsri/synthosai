@@ -5,7 +5,7 @@ import time
 from typing import List, Dict, Any
 from groq import Groq
 
-from prompts import OPENING_STATEMENT_PROMPT, PERSONA_GENERATION_PROMPT
+from prompts import OPENING_STATEMENT_PROMPT, PERSONA_GENERATION_PROMPT, MODERATOR_CROSS_EXAM_PROMPT
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -230,33 +230,88 @@ class SynthosEngine:
         return statements
 
     def round2_cross_examination(self):
+        """Moderator‑driven cross‑examination."""
+        # Collect opening statements
+        openings = []
+        for h in self.debate_history:
+            if h["round"] == 1:
+                openings.append(f"{h['speaker']}: {h['text']}")
+        statements_text = "\n".join(openings)
+
+        # Step 1: Moderator creates cross‑exam assignments
+        try:
+            prompt = MODERATOR_CROSS_EXAM_PROMPT.format(
+                topic=self.topic,
+                statements=statements_text
+            )
+            response = self._call_llm(prompt)
+            logger.info(f"Moderator raw response: {response}")
+            assignments_json = self._extract_json(response)
+            logger.info(f"Moderator extracted JSON: {assignments_json}")
+            assignments = json.loads(assignments_json)
+            if not isinstance(assignments, list):
+                raise ValueError("Moderator did not return a list")
+            logger.info(f"Moderator created {len(assignments)} assignments")
+        except Exception as e:
+            logger.error(f"Moderator assignment failed: {e}. Falling back to simple cross‑exam.")
+            assignments = []
+            # Fallback: let each expert respond to the first expert (like Phase 2)
+            if self.debate_history:
+                first_speaker = None
+                for h in self.debate_history:
+                    if h["round"] == 1:
+                        first_speaker = h["speaker"]
+                        break
+                if first_speaker:
+                    for p in self.personas:
+                        assignments.append({
+                            "responder": p["name"],
+                            "target": first_speaker,
+                            "point": "overall opening statement"
+                        })
+                    logger.info(f"Fallback assignments created: {len(assignments)}")
+                else:
+                    logger.error("No opening statements found; cannot create fallback assignments.")
+
+        # Step 2: Execute each cross‑exam
         cross_exam = []
-        first_statement = ""
-        if self.debate_history:
+        for assign in assignments:
+            responder_name = assign["responder"]
+            target_name = assign["target"]
+            point = assign.get("point", "their opening statement")
+
+            # Find responder persona and target statement
+            responder_persona = next((p for p in self.personas if p["name"] == responder_name), None)
+            if not responder_persona:
+                logger.warning(f"Responder '{responder_name}' not found in personas. Skipping.")
+                continue
+
+            target_statement = ""
             for h in self.debate_history:
-                if h["round"] == 1:
-                    first_statement = h["text"]
+                if h["round"] == 1 and h["speaker"] == target_name:
+                    target_statement = h["text"]
                     break
-        if not first_statement:
-            first_statement = "No opening statement available."
+            if not target_statement:
+                logger.warning(f"Target '{target_name}' opening statement not found. Using placeholder.")
+                target_statement = f"the opening statement of {target_name}"
 
-        for p in self.personas:
             try:
-                prompt = f"""You are {p['role']}. {p['personality']}
+                prompt = f"""You are {responder_persona['role']}. {responder_persona['personality']}
 Topic: {self.topic}
-Another expert said: "{first_statement}"
+{target_name} said: "{target_statement}"
+Specifically address this point: {point}
 
-Write a brief response. Do you agree or disagree? Provide one counterpoint or supporting point.
-Keep it to 100 words."""
+Write a brief response (max 100 words). Do you agree or disagree? Provide a counterpoint or supporting point."""
                 text = self._call_llm(prompt)
-                cross_exam.append({"expert": p["name"], "text": text})
-                self.debate_history.append({"round": 2, "speaker": p["name"], "text": text})
-                logger.info(f"Round 2: {p['name']} completed.")
+                cross_exam.append({"expert": responder_name, "text": text})
+                self.debate_history.append({"round": 2, "speaker": responder_name, "text": text})
+                logger.info(f"Cross‑exam: {responder_name} responded to {target_name} about '{point}'")
             except Exception as e:
-                logger.error(f"Round 2 failed for {p['name']}: {e}")
+                logger.error(f"Cross‑exam failed for {responder_name}: {e}")
                 error_text = f"[Error generating cross-examination: {e}]"
-                cross_exam.append({"expert": p["name"], "text": error_text})
-                self.debate_history.append({"round": 2, "speaker": p["name"], "text": error_text})
+                cross_exam.append({"expert": responder_name, "text": error_text})
+                self.debate_history.append({"round": 2, "speaker": responder_name, "text": error_text})
+
         return cross_exam
 
     def round3_refinement(self):
