@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional
 from groq import Groq
 
 from prompts import (
@@ -95,7 +95,7 @@ class SynthosEngine:
         text = re.sub(r'```json\s*|\s*```', '', text, flags=re.IGNORECASE)
         start_obj = text.find('{')
         start_arr = text.find('[')
-        
+
         if start_arr != -1 and (start_obj == -1 or start_arr < start_obj):
             start = start_arr
             bracket_count = 0
@@ -126,7 +126,7 @@ class SynthosEngine:
                     return candidate
                 except:
                     pass
-        
+
         matches = re.findall(r'(\{.*\}|\[.*\])', text, re.DOTALL)
         for match in matches:
             try:
@@ -396,16 +396,47 @@ Keep it to 150 words."""
         else:
             return self.final_consensus
 
-    # ---------- Run ----------
-    def run(self, topic: str, constraints: str = ""):
+    # ---------- Phase 5: Run with callback ----------
+    def run(self, topic: str, constraints: str = "", on_message: Optional[Callable[[str, int, str], None]] = None):
+        """
+        Full pipeline with optional callback for each new message.
+        on_message(speaker, round_num, text) is called after each message is generated.
+        """
         try:
             self.set_topic(topic, constraints)
         except ValueError as e:
             logger.error(f"Invalid topic: {e}")
+            if on_message:
+                on_message("System", 0, f"Error: {e}")
             return f"Error: {e}"
+
         self.generate_personas()
+        if on_message:
+            on_message("System", 0, f"Personas generated: {', '.join(p['name'] for p in self.personas)}")
+
+        # Round 1
         self.round1_opening_statements()
+        for msg in self.debate_history:
+            if msg["round"] == 1 and on_message:
+                on_message(msg["speaker"], msg["round"], msg["text"])
+
+        # Round 2
         self.round2_cross_examination()
+        for msg in self.debate_history:
+            if msg["round"] == 2 and on_message:
+                on_message(msg["speaker"], msg["round"], msg["text"])
+
+        # Round 3
         self.round3_refinement()
+        for msg in self.debate_history:
+            if msg["round"] == 3 and on_message:
+                on_message(msg["speaker"], msg["round"], msg["text"])
+
+        # Mediator
         self.mediate()
+        if on_message:
+            # Send the consensus as a formatted JSON string for display
+            consensus_text = json.dumps(self.final_consensus, indent=2)
+            on_message("Mediator", 4, consensus_text)
+
         return self.format_output("markdown")
