@@ -207,14 +207,16 @@ setTimeout(() => {
 
 # Setup screen
 if st.session_state.mode == "setup":
-    st.markdown('<div class="setup-container">', unsafe_allow_html=True)
+    #st.markdown('<div class="setup-container">', unsafe_allow_html=True)
     st.markdown("<h1 style='margin-bottom:0;'>🎙️ Synthos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='color:#5A6E8A;'>AI‑powered boardroom debates</p>", unsafe_allow_html=True)
     with st.form("setup_form"):
         topic = st.text_input("Topic", placeholder="e.g., Implement AI Agent Calling for customer support")
         constraints = st.text_area("Constraints (optional)", placeholder="GDPR, budget under $50k")
-        api_key = st.text_input("GROQ API Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
-        model = st.selectbox("Model", ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"])
+        api_key = os.getenv("GROQ_API_KEY", "")
+        model = "llama-3.3-70b-versatile"
+        #api_key = st.text_input("GROQ API Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
+        #model = st.selectbox("Model", ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"])
         submitted = st.form_submit_button("🚀 Start Meeting")
         if submitted:
             if not topic or not api_key:
