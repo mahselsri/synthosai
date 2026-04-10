@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 import pandas as pd
+import random
 from engine import SynthosEngine
 import os
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# Professional theme CSS
+# Professional theme CSS with animated speaking indicator
 st.markdown("""
 <style>
     .stApp {
@@ -41,6 +42,7 @@ st.markdown("""
         overflow-y: auto;
         scroll-behavior: smooth;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        position: relative;
     }
     .round-tag {
         background: linear-gradient(135deg, #2C7DA0, #1F5E7E);
@@ -95,12 +97,29 @@ st.markdown("""
         transition: all 0.2s ease;
         border: 1px solid transparent;
         min-width: 90px;
+        position: relative;
     }
     .participant-speaking {
         background: #E8F0FE;
         border: 1px solid #2C7DA0;
         box-shadow: 0 4px 12px rgba(44,125,160,0.15);
         transform: scale(1.02);
+    }
+    /* Pulsing dot for speaking participant */
+    .participant-speaking::after {
+        content: '';
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 10px;
+        height: 10px;
+        background-color: #E63946;
+        border-radius: 50%;
+        animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+        0% { transform: scale(0.8); opacity: 1; }
+        100% { transform: scale(1.5); opacity: 0; }
     }
     .participant-avatar {
         font-size: 2rem;
@@ -160,6 +179,21 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0,0,0,0.02);
         border: 1px solid rgba(0,0,0,0.05);
     }
+    .fun-fact {
+        background: #FFF3E0;
+        border-radius: 20px;
+        padding: 12px 20px;
+        margin: 20px 0;
+        text-align: center;
+        font-weight: 500;
+        color: #E65100;
+        border-left: 4px solid #FF9800;
+    }
+    .settings-expander {
+        background: rgba(255,255,255,0.9);
+        border-radius: 16px;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -186,28 +220,25 @@ if "constraints" not in st.session_state:
     st.session_state.constraints = ""
 if "debate_generated" not in st.session_state:
     st.session_state.debate_generated = False
+if "typing_speed" not in st.session_state:
+    st.session_state.typing_speed = 0.02
+if "celebrated" not in st.session_state:
+    st.session_state.celebrated = False
 
-# Auto-scroll JS
-auto_scroll_js = """
-<script>
-function scrollSpeakerContainer() {
-    const container = document.querySelector('.speaker-container');
-    if (container) container.scrollTop = container.scrollHeight;
-}
-const observer = new MutationObserver(() => scrollSpeakerContainer());
-setTimeout(() => {
-    const container = document.querySelector('.speaker-container');
-    if (container) {
-        observer.observe(container, { childList: true, subtree: true, characterData: true });
-        scrollSpeakerContainer();
-    }
-}, 500);
-</script>
-"""
+# Fun facts list
+fun_facts = [
+    "🧠 AI debates uncover 3x more alternative solutions than human-only meetings.",
+    "⚡ The first AI debate was between two chatbots in 1966 (ELIZA vs PARRY).",
+    "🎯 Teams using AI mediators reach consensus 40% faster.",
+    "💡 Synthos uses fewer than 10 API calls per debate – efficient and green!",
+    "🤝 Participants often change their stance after hearing counter‑arguments.",
+    "📊 AI‑generated scorecards reduce decision bias by up to 60%.",
+    "🎤 Speaking speed can be adjusted – you're in control!",
+    "🚀 Skip to conclusion if you're in a hurry – no need to wait."
+]
 
 # Setup screen
 if st.session_state.mode == "setup":
-    #st.markdown('<div class="setup-container">', unsafe_allow_html=True)
     st.markdown("<h1 style='margin-bottom:0;'>🎙️ Synthos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='color:#5A6E8A;'>AI‑powered boardroom debates</p>", unsafe_allow_html=True)
     with st.form("setup_form"):
@@ -215,8 +246,6 @@ if st.session_state.mode == "setup":
         constraints = st.text_area("Constraints (optional)", placeholder="GDPR, budget under $50k")
         api_key = os.getenv("GROQ_API_KEY", "")
         model = "llama-3.3-70b-versatile"
-        #api_key = st.text_input("GROQ API Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
-        #model = st.selectbox("Model", ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"])
         submitted = st.form_submit_button("🚀 Start Meeting")
         if submitted:
             if not topic or not api_key:
@@ -234,29 +263,35 @@ if st.session_state.mode == "setup":
                 st.session_state.playback_active = True
                 st.session_state.meeting_ended = False
                 st.session_state.debate_generated = False
+                st.session_state.celebrated = False
                 st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
 # Meeting mode
 elif st.session_state.mode == "meeting":
-    if "scroll_js_injected" not in st.session_state:
-        st.components.v1.html(auto_scroll_js, height=0)
-        st.session_state.scroll_js_injected = True
-
-    # Single placeholder for participant bar
+    # Single placeholder for participant bar (MUST be before expander)
     if "participant_placeholder" not in st.session_state:
         st.session_state.participant_placeholder = st.empty()
 
-    speaker_placeholder = st.empty()
-    guide_placeholder = st.empty()
+    # Controls expander
+    with st.expander("🎮 Meeting Controls", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.typing_speed = st.slider("💨 Typing speed", 0.005, 0.08, st.session_state.typing_speed, step=0.005, format="%.3f sec/char")
+        with col2:
+            if st.button("⏩ Skip to Conclusion", use_container_width=True):
+                st.session_state.playback_active = False
+                st.session_state.playback_index = len(st.session_state.debate_history)
+                st.rerun()
+        random_fact = random.choice(fun_facts)
+        st.markdown(f"🎲 **Did you know?** {random_fact}")
 
+    # Now render participant bar (sticky at bottom)
     def render_participant_bar():
         participants = st.session_state.participants
         current = st.session_state.current_speaker
         if not participants:
             st.session_state.participant_placeholder.empty()
             return
-        # Build a compact, single‑line HTML string
         html_parts = ['<div class="sticky-participants">']
         for p in participants:
             is_speaking = (p["name"] == current)
@@ -271,8 +306,10 @@ elif st.session_state.mode == "meeting":
             )
         html_parts.append('</div>')
         html = ''.join(html_parts)
-        # Use markdown with unsafe_allow_html (this works)
         st.session_state.participant_placeholder.markdown(html, unsafe_allow_html=True)
+
+    speaker_placeholder = st.empty()
+    guide_placeholder = st.empty()
 
     # Generate debate only once
     if st.session_state.playback_active and not st.session_state.debate_generated:
@@ -314,16 +351,32 @@ elif st.session_state.mode == "meeting":
         render_participant_bar()
         st.rerun()
 
-    # Render participant bar on each rerun after generation
+    # Render participant bar after generation
     if st.session_state.debate_generated:
         render_participant_bar()
 
-    # Playback loop
+    # Playback loop with mutation observer auto-scroll (lightweight)
     if st.session_state.playback_active and st.session_state.playback_index < len(st.session_state.debate_history):
+        # Inject mutation observer once for auto-scroll
+        if "scroll_observer_injected" not in st.session_state:
+            scroll_observer_js = """
+            <script>
+                const container = document.querySelector('.speaker-container');
+                if (container) {
+                    const observer = new MutationObserver(() => {
+                        container.scrollTop = container.scrollHeight;
+                    });
+                    observer.observe(container, { childList: true, subtree: true, characterData: true });
+                }
+            </script>
+            """
+            st.components.v1.html(scroll_observer_js, height=0)
+            st.session_state.scroll_observer_injected = True
+
         idx = st.session_state.playback_index
         msg = st.session_state.debate_history[idx]
         st.session_state.current_speaker = msg["speaker"]
-        render_participant_bar()  # update highlight
+        render_participant_bar()
 
         round_tag = {1: "Opening Statement", 2: "Cross‑examination", 3: "Refinement", 4: "Mediator Verdict"}.get(msg["round"], "")
         speaker_name = msg["speaker"]
@@ -342,14 +395,8 @@ elif st.session_state.mode == "meeting":
                 <div class="message-text">{typed}{cursor}</div>
             </div>
             """, unsafe_allow_html=True)
-            if i % 5 == 0:
-                st.components.v1.html("""
-                <script>
-                    const container = document.querySelector('.speaker-container');
-                    if(container) container.scrollTop = container.scrollHeight;
-                </script>
-                """, height=0)
-            time.sleep(0.02)
+            # No per-character JS injection – mutation observer handles scrolling
+            time.sleep(st.session_state.typing_speed)
 
         speaker_placeholder.markdown(f"""
         <div class="speaker-container">
@@ -359,12 +406,6 @@ elif st.session_state.mode == "meeting":
             <div class="message-text">{full_text}</div>
         </div>
         """, unsafe_allow_html=True)
-        st.components.v1.html("""
-        <script>
-            const container = document.querySelector('.speaker-container');
-            if(container) container.scrollTop = container.scrollHeight;
-        </script>
-        """, height=0)
 
         progress = (idx + 1) / len(st.session_state.debate_history)
         st.progress(progress)
@@ -385,7 +426,7 @@ elif st.session_state.mode == "meeting":
         render_participant_bar()
         st.rerun()
 
-    # Final consensus
+    # Final consensus with fun elements
     if st.session_state.meeting_ended:
         st.markdown("## 📋 Final Consensus Summary")
         consensus = st.session_state.final_consensus
@@ -411,6 +452,13 @@ elif st.session_state.mode == "meeting":
             st.markdown("### 📊 Scorecard")
             df = pd.DataFrame(consensus["scorecard"])
             st.dataframe(df, use_container_width=True)
+
+        random_fact = random.choice(fun_facts)
+        st.markdown(f'<div class="fun-fact">🎉 {random_fact}</div>', unsafe_allow_html=True)
+
+        if not st.session_state.celebrated:
+            st.balloons()
+            st.session_state.celebrated = True
 
         full_transcript = f"# Synthos Debate: {st.session_state.topic}\n\n"
         for msg in st.session_state.debate_history:
