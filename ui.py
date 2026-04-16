@@ -2,8 +2,9 @@ import streamlit as st
 import time
 import pandas as pd
 import random
-from engine import SynthosEngine
+import json
 import os
+from engine import SynthosEngine
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,7 +26,7 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# Professional theme CSS with animated speaking indicator
+# Professional theme CSS (unchanged)
 st.markdown("""
 <style>
     .stApp {
@@ -105,7 +106,6 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(44,125,160,0.15);
         transform: scale(1.02);
     }
-    /* Pulsing dot for speaking participant */
     .participant-speaking::after {
         content: '';
         position: absolute;
@@ -197,6 +197,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Helper to load template with UTF-8
+def load_template(template_name):
+    template_path = os.path.join("templates", f"{template_name}.json")
+    if os.path.exists(template_path):
+        with open(template_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
 # Session state
 if "mode" not in st.session_state:
     st.session_state.mode = "setup"
@@ -225,7 +233,6 @@ if "typing_speed" not in st.session_state:
 if "celebrated" not in st.session_state:
     st.session_state.celebrated = False
 
-# Fun facts list
 fun_facts = [
     "🧠 AI debates uncover 3x more alternative solutions than human-only meetings.",
     "⚡ The first AI debate was between two chatbots in 1966 (ELIZA vs PARRY).",
@@ -242,19 +249,36 @@ if st.session_state.mode == "setup":
     st.markdown("<h1 style='margin-bottom:0;'>🎙️ Synthos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='color:#5A6E8A;'>AI‑powered boardroom debates</p>", unsafe_allow_html=True)
     with st.form("setup_form"):
+        use_case = st.selectbox("Use Case", ["General", "Build vs Buy"])
         topic = st.text_input("Topic", placeholder="e.g., Implement AI Agent Calling for customer support")
         constraints = st.text_area("Constraints (optional)", placeholder="GDPR, budget under $50k")
+        
+        if use_case == "Build vs Buy":
+            col1, col2 = st.columns(2)
+            with col1:
+                budget = st.text_input("Budget (e.g., $100k)", placeholder="$100k")
+            with col2:
+                timeline = st.text_input("Timeline (e.g., 3 months)", placeholder="3 months")
+            if budget:
+                constraints += f"\nBudget: {budget}"
+            if timeline:
+                constraints += f"\nTimeline: {timeline}"
+        
         api_key = os.getenv("GROQ_API_KEY", "")
-        model = "llama-3.3-70b-versatile"
         submitted = st.form_submit_button("🚀 Start Meeting")
         if submitted:
             if not topic or not api_key:
-                st.warning("Please enter both topic and API key.")
+                st.warning("Please enter a topic and ensure GROQ_API_KEY is set.")
             else:
                 st.session_state.topic = topic
-                st.session_state.constraints = constraints
+                st.session_state.constraints = constraints.strip()
                 st.session_state.api_key = api_key
-                st.session_state.model = model
+                st.session_state.model = "llama-3.3-70b-versatile"
+                st.session_state.use_case = use_case
+                if use_case == "Build vs Buy":
+                    st.session_state.template = load_template("build_vs_buy")
+                else:
+                    st.session_state.template = None
                 st.session_state.mode = "meeting"
                 st.session_state.debate_history = []
                 st.session_state.participants = []
@@ -268,11 +292,9 @@ if st.session_state.mode == "setup":
 
 # Meeting mode
 elif st.session_state.mode == "meeting":
-    # Single placeholder for participant bar (MUST be before expander)
     if "participant_placeholder" not in st.session_state:
         st.session_state.participant_placeholder = st.empty()
 
-    # Controls expander
     with st.expander("🎮 Meeting Controls", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
@@ -285,7 +307,6 @@ elif st.session_state.mode == "meeting":
         random_fact = random.choice(fun_facts)
         st.markdown(f"🎲 **Did you know?** {random_fact}")
 
-    # Now render participant bar (sticky at bottom)
     def render_participant_bar():
         participants = st.session_state.participants
         current = st.session_state.current_speaker
@@ -325,7 +346,12 @@ elif st.session_state.mode == "meeting":
             time.sleep(1.2)
         
         with st.spinner("Running AI debate (this may take a minute)..."):
-            engine = SynthosEngine(api_key=st.session_state.api_key, model=st.session_state.model, provider="groq")
+            engine = SynthosEngine(
+                api_key=st.session_state.api_key,
+                model=st.session_state.model,
+                provider="groq",
+                template=st.session_state.template
+            )
             engine.set_topic(st.session_state.topic, st.session_state.constraints)
             engine.generate_personas()
             participants = []
@@ -333,7 +359,7 @@ elif st.session_state.mode == "meeting":
                 participants.append({
                     "name": p["name"],
                     "role": p["role"],
-                    "avatar": "👩‍💼" if "female" in p["name"].lower() else "👨‍💼"
+                    "avatar": p.get("avatar", "👩‍💼" if "female" in p["name"].lower() else "👨‍💼")
                 })
             participants.append({"name": "Mediator", "role": "Neutral Mediator", "avatar": "⚖️"})
             st.session_state.participants = participants
@@ -351,13 +377,11 @@ elif st.session_state.mode == "meeting":
         render_participant_bar()
         st.rerun()
 
-    # Render participant bar after generation
     if st.session_state.debate_generated:
         render_participant_bar()
 
-    # Playback loop with mutation observer auto-scroll (lightweight)
+    # Playback loop with mutation observer
     if st.session_state.playback_active and st.session_state.playback_index < len(st.session_state.debate_history):
-        # Inject mutation observer once for auto-scroll
         if "scroll_observer_injected" not in st.session_state:
             scroll_observer_js = """
             <script>
@@ -395,7 +419,6 @@ elif st.session_state.mode == "meeting":
                 <div class="message-text">{typed}{cursor}</div>
             </div>
             """, unsafe_allow_html=True)
-            # No per-character JS injection – mutation observer handles scrolling
             time.sleep(st.session_state.typing_speed)
 
         speaker_placeholder.markdown(f"""
@@ -426,33 +449,159 @@ elif st.session_state.mode == "meeting":
         render_participant_bar()
         st.rerun()
 
-    # Final consensus with fun elements
+    # Final consensus (fixed indentation)
+        # Final consensus with call to action
     if st.session_state.meeting_ended:
         st.markdown("## 📋 Final Consensus Summary")
         consensus = st.session_state.final_consensus
         verdict = consensus.get("verdict", "No verdict")
-        impl_plan = consensus.get("implementation_plan", [])
-        risks = consensus.get("risks_mitigations", [])
-        dissent = consensus.get("dissent_note", "None")
+        
+        # Display verdict and justification (as before)
+        if "justification" in consensus:
+            justification = consensus.get("justification", [])
+            impl_plan = consensus.get("implementation_plan", [])
+            risks = consensus.get("risks_mitigations", [])
+            financial = consensus.get("financial_summary", "Not provided")
+            dissent = consensus.get("dissent_note", "None")
+            
+            st.markdown(f"""
+            <div style="background:#FFFFFF; padding:24px; border-radius:28px; border:1px solid rgba(0,0,0,0.05); margin:20px 0;">
+                <h4 style="color:#1E2A3E;">Verdict: {verdict}</h4>
+                <h4 style="color:#1E2A3E;">Justification</h4>
+                <ul>{"".join(f"<li>{j}</li>" for j in justification)}</ul>
+                <h4 style="color:#1E2A3E;">Risks & Mitigations</h4>
+                <ul>{"".join(f"<li>{risk}</li>" for risk in risks)}</ul>
+                <h4 style="color:#1E2A3E;">Financial Summary</h4>
+                <p>{financial}</p>
+                <h4 style="color:#1E2A3E;">Dissent</h4>
+                <p>{dissent}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            impl_plan = consensus.get("implementation_plan", [])
+            risks = consensus.get("risks_mitigations", [])
+            dissent = consensus.get("dissent_note", "None")
+            st.markdown(f"""
+            <div style="background:#FFFFFF; padding:24px; border-radius:28px; border:1px solid rgba(0,0,0,0.05); margin:20px 0;">
+                <h4 style="color:#1E2A3E;">Verdict</h4>
+                <p style="color:#2C3E50;">{verdict}</p>
+                <h4 style="color:#1E2A3E;">Risks & Mitigations</h4>
+                <ul>{"".join(f"<li style='color:#2C3E50;'>{risk}</li>" for risk in risks)}</ul>
+                <h4 style="color:#1E2A3E;">Dissent</h4>
+                <p style="color:#2C3E50;">{dissent}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.markdown(f"""
-        <div style="background:#FFFFFF; padding:24px; border-radius:28px; border:1px solid rgba(0,0,0,0.05); margin:20px 0;">
-            <h4 style="color:#1E2A3E;">Verdict</h4>
-            <p style="color:#2C3E50;">{verdict}</p>
-            <h4 style="color:#1E2A3E;">Implementation Plan</h4>
-            <ul>{"".join(f"<li style='color:#2C3E50;'>{step}</li>" for step in impl_plan)}</ul>
-            <h4 style="color:#1E2A3E;">Risks & Mitigations</h4>
-            <ul>{"".join(f"<li style='color:#2C3E50;'>{risk}</li>" for risk in risks)}</ul>
-            <h4 style="color:#1E2A3E;">Dissent</h4>
-            <p style="color:#2C3E50;">{dissent}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+        # ---------- CALL TO ACTION: Implementation Plan as task list ----------
+        if impl_plan:
+            st.markdown("## 🚀 Call to Action")
+            st.markdown("### Implementation Tasks")
+            
+            # Use session state to store task assignments
+            if "task_assignees" not in st.session_state:
+                st.session_state.task_assignees = {}
+            if "task_due_dates" not in st.session_state:
+                st.session_state.task_due_dates = {}
+            
+            # Pre-populate assignee options (from participants)
+            assignee_options = [p["name"] for p in st.session_state.participants if p["name"] != "Mediator"]
+            if not assignee_options:
+                assignee_options = ["Unassigned"]
+            
+            # Display each task with editable assignee and due date
+            for idx, task in enumerate(impl_plan):
+                col1, col2, col3 = st.columns([4, 2, 2])
+                with col1:
+                    st.markdown(f"**Task {idx+1}:** {task}")
+                with col2:
+                    # Assignee dropdown
+                    current_assignee = st.session_state.task_assignees.get(idx, assignee_options[0])
+                    new_assignee = st.selectbox(
+                        "Assignee",
+                        assignee_options,
+                        index=assignee_options.index(current_assignee) if current_assignee in assignee_options else 0,
+                        key=f"assignee_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.session_state.task_assignees[idx] = new_assignee
+                with col3:
+                    # Due date picker
+                    current_due = st.session_state.task_due_dates.get(idx, "Not set")
+                    new_due = st.date_input(
+                        "Due date",
+                        value=None,
+                        key=f"due_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    if new_due:
+                        st.session_state.task_due_dates[idx] = new_due.strftime("%Y-%m-%d")
+                    st.caption(current_due if current_due != "Not set" else "No due date")
+            
+            # Download action plan as CSV (for Jira/Asana)
+            import csv
+            from io import StringIO
+            
+            def generate_action_csv():
+                output = StringIO()
+                writer = csv.writer(output)
+                writer.writerow(["Task", "Assignee", "Due Date", "Status"])
+                for idx, task in enumerate(impl_plan):
+                    assignee = st.session_state.task_assignees.get(idx, "Unassigned")
+                    due = st.session_state.task_due_dates.get(idx, "")
+                    writer.writerow([task, assignee, due, "Pending"])
+                return output.getvalue()
+            
+            def generate_action_markdown():
+                md = "## Action Plan\n\n"
+                for idx, task in enumerate(impl_plan):
+                    assignee = st.session_state.task_assignees.get(idx, "Unassigned")
+                    due = st.session_state.task_due_dates.get(idx, "")
+                    md += f"- **Task {idx+1}:** {task}  \n  *Assignee:* {assignee}  \n  *Due:* {due}\n\n"
+                return md
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                csv_data = generate_action_csv()
+                st.download_button(
+                    label="📥 Download Action Plan (CSV)",
+                    data=csv_data,
+                    file_name="synthos_action_plan.csv",
+                    mime="text/csv",
+                    key="download_csv"
+                )
+            with col2:
+                md_data = generate_action_markdown()
+                st.download_button(
+                    label="📝 Download Action Plan (Markdown)",
+                    data=md_data,
+                    file_name="synthos_action_plan.md",
+                    mime="text/markdown",
+                    key="download_md"
+                )
+            with col3:
+                # Copy to clipboard using st.code + user instruction
+                st.markdown("**Copy to clipboard**")
+                st.code("\n".join([f"- {task} (Assignee: {st.session_state.task_assignees.get(idx, 'Unassigned')})" for idx, task in enumerate(impl_plan)]), language="markdown")
+            
+            # Suggested follow-up meeting
+            st.markdown("### 📅 Suggested Next Meeting")
+            if verdict == "Buy":
+                st.info("🎯 **Follow-up action:** Schedule a vendor selection workshop. Invite Procurement, Legal, and Engineering. Review top 3 vendors by next Thursday.")
+            elif verdict == "Build":
+                st.info("🛠️ **Follow-up action:** Kick off architecture design sprint. Assign tech lead, set up proof-of-concept environment, and align on MVP scope within 2 weeks.")
+            else:  # Hybrid
+                st.info("🤝 **Follow-up action:** Form a cross-functional task force to define integration points between build and buy components. Deliver a hybrid architecture diagram within 10 days.")
+            
+            if st.button("➕ Add to Calendar (placeholder)", key="calendar"):
+                st.info("Calendar integration coming soon. For now, copy the suggested action above.")
+        
+        # Scorecard (if any)
         if "scorecard" in consensus:
             st.markdown("### 📊 Scorecard")
             df = pd.DataFrame(consensus["scorecard"])
             st.dataframe(df, use_container_width=True)
 
+        # Fun fact & balloons
         random_fact = random.choice(fun_facts)
         st.markdown(f'<div class="fun-fact">🎉 {random_fact}</div>', unsafe_allow_html=True)
 
@@ -460,10 +609,19 @@ elif st.session_state.mode == "meeting":
             st.balloons()
             st.session_state.celebrated = True
 
+        # Full transcript download (unchanged)
         full_transcript = f"# Synthos Debate: {st.session_state.topic}\n\n"
         for msg in st.session_state.debate_history:
             full_transcript += f"**Round {msg['round']} - {msg['speaker']}:** {msg['text']}\n\n"
-        full_transcript += f"\n## Consensus\n{verdict}\n\n### Implementation Plan\n" + "\n".join(f"- {s}" for s in impl_plan) + "\n\n### Risks\n" + "\n".join(f"- {r}" for r in risks)
+        full_transcript += f"\n## Consensus\n{verdict}\n\n"
+        if "justification" in consensus:
+            full_transcript += "### Justification\n" + "\n".join(f"- {j}" for j in consensus.get('justification', [])) + "\n\n"
+        full_transcript += "### Implementation Plan\n" + "\n".join(f"- {s}" for s in consensus.get('implementation_plan', [])) + "\n\n"
+        full_transcript += "### Risks & Mitigations\n" + "\n".join(f"- {r}" for r in consensus.get('risks_mitigations', [])) + "\n\n"
+        if "financial_summary" in consensus:
+            full_transcript += f"### Financial Summary\n{consensus['financial_summary']}\n\n"
+        full_transcript += f"### Dissent\n{consensus.get('dissent_note', 'None')}\n"
+        
         st.download_button("📥 Download Full Transcript", full_transcript, file_name="synthos_meeting.md", key="download")
 
         if st.button("➕ New Meeting"):

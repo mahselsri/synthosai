@@ -70,3 +70,22 @@ Output a JSON object with:
 
 Output only JSON. Be concrete, avoid generic phrases.
 """
+
+BUILD_VS_BUY_MEDIATOR_PROMPT = """You are a neutral mediator for a Build vs Buy decision. Synthesize the debate into a concrete verdict.
+
+Topic: {topic}
+Constraints: {constraints}
+
+Debate transcript:
+{transcript}
+
+Output a JSON object with:
+- "verdict": "Build", "Buy", or "Hybrid"
+- "justification": list of 3 bullet points explaining why
+- "implementation_plan": list of steps (e.g., vendor selection, pilot, rollout for Buy; architecture, sprints, testing for Build)
+- "risks_mitigations": list of key risks and their mitigations
+- "financial_summary": estimated budget (range) and payback period
+- "dissent_note": minority opinion, if any
+
+Be specific. Use numbers and concrete actions.
+"""

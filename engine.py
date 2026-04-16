@@ -23,13 +23,15 @@ class SynthosEngine:
         model: str = "llama-3.3-70b-versatile",
         provider: str = "groq",
         max_retries: int = 3,
-        retry_delay: float = 1.0
+        retry_delay: float = 1.0,
+        template: Optional[Dict] = None
     ):
         self.api_key = api_key
         self.model = model
         self.provider = provider
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.template = template
 
         if provider == "groq":
             self.client = Groq(api_key=api_key)
@@ -85,40 +87,21 @@ class SynthosEngine:
             raise RuntimeError(f"LLM call failed: {e}")
 
     def _extract_json(self, text: str) -> str:
+        """Extract JSON from text (handles markdown, extra text, multiple braces)."""
+        # Remove markdown code fences
         text = re.sub(r'```json\s*|\s*```', '', text, flags=re.IGNORECASE)
-        start_obj = text.find('{')
-        start_arr = text.find('[')
-        if start_arr != -1 and (start_obj == -1 or start_arr < start_obj):
-            start = start_arr
-            bracket_count = 0
-            for i, ch in enumerate(text[start:], start=start):
-                if ch == '[':
-                    bracket_count += 1
-                elif ch == ']':
-                    bracket_count -= 1
-                    if bracket_count == 0:
-                        end = i
-                        break
-            else:
-                end = text.rfind(']')
-            if start != -1 and end != -1 and end > start:
-                candidate = text[start:end+1]
-                try:
-                    json.loads(candidate)
-                    return candidate
-                except:
-                    pass
-        else:
-            start = text.find('{')
-            end = text.rfind('}')
-            if start != -1 and end != -1 and end > start:
-                candidate = text[start:end+1]
-                try:
-                    json.loads(candidate)
-                    return candidate
-                except:
-                    pass
-        matches = re.findall(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+        # Find first { and last }
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start:end+1]
+            try:
+                json.loads(candidate)
+                return candidate
+            except:
+                pass
+        # Fallback: try to find any JSON-like object
+        matches = re.findall(r'\{[^{}]*\}', text, re.DOTALL)
         for match in matches:
             try:
                 json.loads(match)
@@ -133,39 +116,44 @@ class SynthosEngine:
         self.topic = topic.strip()
         self.user_constraints = constraints.strip() if constraints else ""
 
-    # ---------- Phase 2: Dynamic Personas ----------
+    # ---------- Persona generation ----------
     def generate_personas(self):
-        try:
-            prompt = PERSONA_GENERATION_PROMPT.format(
-                topic=self.topic,
-                constraints=self.user_constraints if self.user_constraints else "None"
-            )
-            response = self._call_llm(prompt)
-            json_str = self._extract_json(response)
-            personas = json.loads(json_str)
-            if isinstance(personas, list) and len(personas) >= 2:
-                valid = True
-                for p in personas:
-                    if not all(k in p for k in ("name", "role", "personality", "goal")):
-                        valid = False
-                        break
-                if valid:
-                    self.personas = personas
-                    return self.personas
-                else:
-                    raise ValueError("Persona missing required fields")
-            else:
-                raise ValueError("Invalid persona format")
-        except Exception as e:
-            logger.error(f"Dynamic persona generation failed: {e}. Using fallback.")
-            self.personas = [
-                {"name": "Dr. Tech Expert", "role": "CTO", "personality": "Technical, pragmatic", "goal": "Feasibility"},
-                {"name": "Dr. Ethics Advisor", "role": "Ethics Lead", "personality": "Cautious, risk-aware", "goal": "Compliance"},
-                {"name": "Ms. Business Strategist", "role": "Product Head", "personality": "Market-driven", "goal": "ROI"}
-            ]
+        if self.template and "personas" in self.template:
+            self.personas = self.template["personas"].copy()
+            logger.info(f"Loaded {len(self.personas)} personas from template")
             return self.personas
+        else:
+            try:
+                prompt = PERSONA_GENERATION_PROMPT.format(
+                    topic=self.topic,
+                    constraints=self.user_constraints if self.user_constraints else "None"
+                )
+                response = self._call_llm(prompt)
+                json_str = self._extract_json(response)
+                personas = json.loads(json_str)
+                if isinstance(personas, list) and len(personas) >= 2:
+                    valid = True
+                    for p in personas:
+                        if not all(k in p for k in ("name", "role", "personality", "goal")):
+                            valid = False
+                            break
+                    if valid:
+                        self.personas = personas
+                        return self.personas
+                    else:
+                        raise ValueError("Persona missing required fields")
+                else:
+                    raise ValueError("Invalid persona format")
+            except Exception as e:
+                logger.error(f"Dynamic persona generation failed: {e}. Using fallback.")
+                self.personas = [
+                    {"name": "Dr. Tech Expert", "role": "CTO", "personality": "Technical, pragmatic", "goal": "Feasibility"},
+                    {"name": "Dr. Ethics Advisor", "role": "Ethics Lead", "personality": "Cautious, risk-aware", "goal": "Compliance"},
+                    {"name": "Ms. Business Strategist", "role": "Product Head", "personality": "Market-driven", "goal": "ROI"}
+                ]
+                return self.personas
 
-    # ---------- Debate rounds (simplified for brevity, but same as before) ----------
+    # ---------- Debate rounds ----------
     def round1_opening_statements(self):
         statements = []
         for p in self.personas:
@@ -183,10 +171,6 @@ class SynthosEngine:
         return statements
 
     def round2_cross_examination(self):
-        # Full implementation as before, but keep same structure
-        # (to avoid too long code, I'll keep the working version from earlier)
-        # Assume this method works – you already had a working round2.
-        # For brevity, I'll include the minimal version that works.
         cross_exam = []
         first_statement = self.debate_history[0]["text"] if self.debate_history else ""
         for p in self.personas:
@@ -216,19 +200,55 @@ class SynthosEngine:
                 self.debate_history.append({"round": 3, "speaker": p["name"], "text": error_text})
         return refinements
 
+    # ---------- Mediator with robust parsing ----------
     def mediate(self):
         transcript = "\n".join([f"Round {h['round']} - {h['speaker']}: {h['text']}" for h in self.debate_history])
-        prompt = RUBRIC_MEDIATOR_PROMPT.format(
+        if self.template and "mediator_prompt" in self.template:
+            base_prompt = self.template["mediator_prompt"]
+        else:
+            base_prompt = RUBRIC_MEDIATOR_PROMPT
+        prompt = base_prompt.format(
             topic=self.topic,
             constraints=self.user_constraints if self.user_constraints else "None",
             transcript=transcript
         )
         try:
             response = self._call_llm(prompt)
+            logger.info(f"Mediator raw response: {response[:300]}...")
             json_str = self._extract_json(response)
             self.final_consensus = json.loads(json_str)
+            # Ensure required fields exist
+            if self.template and "mediator_prompt" in self.template:
+                self.final_consensus.setdefault("verdict", "Error")
+                self.final_consensus.setdefault("justification", ["No justification provided"])
+                self.final_consensus.setdefault("implementation_plan", [])
+                self.final_consensus.setdefault("risks_mitigations", [])
+                self.final_consensus.setdefault("financial_summary", "Not available")
+                self.final_consensus.setdefault("dissent_note", "None")
+            else:
+                self.final_consensus.setdefault("verdict", "Error")
+                self.final_consensus.setdefault("implementation_plan", [])
+                self.final_consensus.setdefault("risks_mitigations", [])
+                self.final_consensus.setdefault("dissent_note", "None")
         except Exception as e:
-            self.final_consensus = {"error": str(e), "verdict": "Error", "implementation_plan": [], "risks_mitigations": [], "dissent_note": "None"}
+            logger.error(f"Mediator parsing failed: {e}")
+            # Fallback consensus
+            if self.template and "mediator_prompt" in self.template:
+                self.final_consensus = {
+                    "verdict": "Error",
+                    "justification": ["Mediator output could not be parsed. Please try again."],
+                    "implementation_plan": [],
+                    "risks_mitigations": [],
+                    "financial_summary": "Not available",
+                    "dissent_note": "None"
+                }
+            else:
+                self.final_consensus = {
+                    "verdict": "Error",
+                    "implementation_plan": [],
+                    "risks_mitigations": [],
+                    "dissent_note": "None"
+                }
         return self.final_consensus
 
     def format_output(self, format_type="markdown"):
@@ -243,15 +263,25 @@ class SynthosEngine:
             for h in self.debate_history:
                 md += f"**Round {h['round']} - {h['speaker']}:** {h['text']}\n\n"
             md += "## Consensus\n"
-            md += f"**Verdict:** {self.final_consensus.get('verdict', '')}\n\n"
-            md += "**Implementation Plan:**\n" + "\n".join(f"- {s}" for s in self.final_consensus.get('implementation_plan', [])) + "\n\n"
-            md += "**Risks & Mitigations:**\n" + "\n".join(f"- {r}" for r in self.final_consensus.get('risks_mitigations', [])) + "\n\n"
-            md += f"**Dissent:** {self.final_consensus.get('dissent_note', 'None')}\n"
+            if "justification" in self.final_consensus:
+                # Template output
+                md += f"**Verdict:** {self.final_consensus.get('verdict', '')}\n\n"
+                md += "**Justification:**\n" + "\n".join(f"- {j}" for j in self.final_consensus.get('justification', [])) + "\n\n"
+                md += "**Implementation Plan:**\n" + "\n".join(f"- {s}" for s in self.final_consensus.get('implementation_plan', [])) + "\n\n"
+                md += "**Risks & Mitigations:**\n" + "\n".join(f"- {r}" for r in self.final_consensus.get('risks_mitigations', [])) + "\n\n"
+                md += f"**Financial Summary:** {self.final_consensus.get('financial_summary', '')}\n\n"
+                md += f"**Dissent:** {self.final_consensus.get('dissent_note', 'None')}\n"
+            else:
+                # Generic output
+                md += f"**Verdict:** {self.final_consensus.get('verdict', '')}\n\n"
+                md += "**Implementation Plan:**\n" + "\n".join(f"- {s}" for s in self.final_consensus.get('implementation_plan', [])) + "\n\n"
+                md += "**Risks & Mitigations:**\n" + "\n".join(f"- {r}" for r in self.final_consensus.get('risks_mitigations', [])) + "\n\n"
+                md += f"**Dissent:** {self.final_consensus.get('dissent_note', 'None')}\n"
             return md
         else:
             return self.final_consensus
 
-    # ---------- Run with callback ----------
+    # ---------- Run ----------
     def run(self, topic: str, constraints: str = "", on_message: Optional[Callable[[str, int, str], None]] = None):
         self.set_topic(topic, constraints)
         self.generate_personas()
